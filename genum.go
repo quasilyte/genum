@@ -181,6 +181,8 @@ const _{{$.TypeName}}_string = "{{$.CombinedString}}"
 
 // String returns the text-printed representation of {{$.TypeName}}.
 // Can be used for serialization.
+//
+// Returns an empty string for unknown enum entries.
 func ({{$.ReceiverName}} {{$.TypeName}}) String() string {
 	switch ({{$.ReceiverName}}) {
 	{{range $.AllValues -}}
@@ -188,10 +190,13 @@ func ({{$.ReceiverName}} {{$.TypeName}}) String() string {
 		return _{{$.TypeName}}_string[{{.StringFrom}}:{{.StringTo}}] // "{{.String}}"
 	{{end -}}
 	}
+	return ""
 }
 
 // FromString updates the {{$.ReceiverName}} value if given string is recognized.
 // Can be used for deserialization if the values for FromString are created by String method.
+//
+// Keeps the old value if given string is not recognized.
 func ({{$.ReceiverName}} *{{$.TypeName}}) FromString(raw string) {
 	value := *{{$.ReceiverName}}
 	switch raw {
