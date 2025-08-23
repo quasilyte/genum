@@ -171,9 +171,6 @@ func (g *Generator) generate(w io.Writer, entries []parsedEnumEntry) {
 		offset := 0
 		for _, e := range entries {
 			s := e.String
-			if s == "" {
-				s = e.Name
-			}
 			combinedStringBuilder.WriteString(s)
 			valueMapping = append(valueMapping, [2]int{offset, offset + len(s)})
 			offset += len(s)
