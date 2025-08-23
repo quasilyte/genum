@@ -3,7 +3,10 @@ package genum
 import (
 	"bytes"
 	"fmt"
+	"go/ast"
 	"go/format"
+	"go/parser"
+	"go/token"
 	"io"
 	"runtime"
 	"strings"
@@ -12,36 +15,24 @@ import (
 )
 
 type Generator struct {
-	TypeName string
+	typeName string
 
-	PackageName string
+	packageName string
 
-	ValueExpr ValueKind
+	valueExpr valueExprKind
 
-	Flags Flags
-
-	underlyingType string
-	loc            string
+	loc string
 }
 
-type Flags int
+type valueExprKind int
 
 const (
-	FlagExtraFmtBinary Flags = 1 << iota
-	FlagExtraFmtHex
+	valueExprIota valueExprKind = iota
 )
 
-type ValueKind int
-
-const (
-	// ValueIota is `= iota` expression
-	ValueIota ValueKind = iota
-)
-
-type EnumEntry struct {
-	Name    string
-	String  string
-	Comment []string
+type parsedEnumEntry struct {
+	Name   string
+	String string
 }
 
 type enumEntryData struct {
@@ -49,42 +40,131 @@ type enumEntryData struct {
 	StringFrom int
 	StringTo   int
 	String     string
-	Comment    string
 }
 
-func NewGenerator() *Generator {
+func NewGenerator(packageName, typeName string) *Generator {
 	_, file, line, ok := runtime.Caller(1)
 	if !ok {
 		panic("failed to extract caller information")
 	}
-	g := &Generator{}
+	g := &Generator{
+		packageName: packageName,
+		typeName:    typeName,
+	}
 	g.loc = fmt.Sprintf("%s:%d", file, line)
 	return g
 }
 
-func (g *Generator) SetUnderlyingType(typeName string) {
-	switch typeName {
-	case "int", "int8", "int16", "int32", "int64":
-		// OK
-	case "uint", "uint8", "uint16", "uint32", "uint64":
-		// OK
+func (g *Generator) analyzeValueExpr(e ast.Expr) {
+	switch e := e.(type) {
+	case *ast.ParenExpr:
+		g.analyzeValueExpr(e.X)
+	case *ast.Ident:
+		g.valueExpr = valueExprIota
 	default:
-		panic(fmt.Sprintf("unexpected underlying type: %q", typeName))
+		panic(fmt.Sprintf("unexpected expr: %T", e))
 	}
-	g.underlyingType = typeName
 }
 
-func (g *Generator) Generate(w io.Writer, entries []EnumEntry) {
-	var incFunc func(i int64) int64
-	var valueExpr string
-	switch g.ValueExpr {
-	case ValueIota:
-		valueExpr = "iota"
-		incFunc = func(i int64) int64 {
-			return i + 1
+func (g *Generator) matchDecl(decl *ast.GenDecl) bool {
+	if len(decl.Specs) == 0 {
+		return false
+	}
+
+	spec, ok := decl.Specs[0].(*ast.ValueSpec)
+	if !ok {
+		return false
+	}
+	if len(spec.Names) != 1 || len(spec.Values) != 1 || spec.Type == nil {
+		return false
+	}
+
+	hasIota := false
+	ast.Inspect(spec.Values[0], func(n ast.Node) bool {
+		if ident, ok := n.(*ast.Ident); ok {
+			if ident.Name == "iota" {
+				hasIota = true
+				return false
+			}
+		}
+		return true
+	})
+	if !hasIota {
+		return false
+	}
+
+	typeIdent, ok := spec.Type.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if typeIdent.Name != g.typeName {
+		return false
+	}
+
+	for _, spec := range decl.Specs[1:] {
+		spec, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			return false
+		}
+		if len(spec.Values) != 0 || len(spec.Names) != 1 || spec.Type != nil {
+			return false
 		}
 	}
 
+	return true
+}
+
+func (g *Generator) Generate(w io.Writer, filename string, src []byte) {
+	var entries []parsedEnumEntry
+
+	var parserSource any
+	if src != nil {
+		parserSource = src
+	}
+
+	f, err := parser.ParseFile(token.NewFileSet(), filename, parserSource, parser.ParseComments)
+	if err != nil {
+		panic(fmt.Sprintf("parsing %q: %v", filename, err))
+	}
+
+	for _, decl := range f.Decls {
+		decl, ok := decl.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		if decl.Tok != token.CONST {
+			continue
+		}
+		if !g.matchDecl(decl) {
+			continue
+		}
+
+		firstSpec := decl.Specs[0].(*ast.ValueSpec)
+		g.analyzeValueExpr(firstSpec.Values[0])
+
+		for _, spec := range decl.Specs {
+			spec := spec.(*ast.ValueSpec)
+			name := spec.Names[0].Name
+			s := name
+			if spec.Comment != nil && len(spec.Comment.List) == 1 {
+				s = strings.TrimSpace(strings.TrimPrefix(spec.Comment.List[0].Text, "//"))
+			}
+			e := parsedEnumEntry{
+				Name:   name,
+				String: s,
+			}
+			entries = append(entries, e)
+		}
+	}
+
+	if len(entries) == 0 {
+		return
+	}
+
+	g.generate(w, entries)
+}
+
+func (g *Generator) generate(w io.Writer, entries []parsedEnumEntry) {
 	var combinedStringBuilder strings.Builder
 	valueMapping := [][2]int{}
 	{
@@ -104,44 +184,25 @@ func (g *Generator) Generate(w io.Writer, entries []EnumEntry) {
 
 	values := make([]enumEntryData, len(entries))
 	{
-		currentValue := int64(0)
 		for i, e := range entries {
-			var commentLines []string
-			for _, l := range e.Comment {
-				commentLines = append(commentLines, "// "+l)
-			}
-			{
-				valueString := fmt.Sprintf("// Value=%d", currentValue)
-				if g.Flags&FlagExtraFmtHex != 0 {
-					valueString += fmt.Sprintf(" hex=`%x`", currentValue)
-				}
-				if g.Flags&FlagExtraFmtBinary != 0 {
-					valueString += fmt.Sprintf(" bin=`%b`", currentValue)
-				}
-				commentLines = append(commentLines, valueString)
-			}
 			fromTo := valueMapping[i]
 			values[i] = enumEntryData{
 				Name:       e.Name,
 				StringFrom: fromTo[0],
 				StringTo:   fromTo[1],
 				String:     combinedString[fromTo[0]:fromTo[1]],
-				Comment:    strings.Join(commentLines, "\n"),
 			}
-			currentValue = incFunc(currentValue)
 		}
 	}
 
-	firstChar, _ := utf8.DecodeRuneInString(g.TypeName)
+	firstChar, _ := utf8.DecodeRuneInString(g.typeName)
 	data := map[string]any{
-		"PackageName":    g.PackageName,
-		"TypeName":       g.TypeName,
-		"UnderlyingType": g.underlyingType,
+		"PackageName":    g.packageName,
+		"TypeName":       g.typeName,
 		"NumValues":      len(values),
-		"ValueExpr":      valueExpr,
+		"Values":         values,
 		"FirstValue":     values[0],
-		"Values":         values[1:],
-		"AllValues":      values,
+		"LastValue":      values[len(values)-1],
 		"ReceiverName":   strings.ToLower(string(firstChar)),
 		"CombinedString": combinedString,
 		"Loc":            g.loc,
@@ -167,17 +228,19 @@ package {{$.PackageName}}
 
 const Num{{$.TypeName}} = {{$.NumValues}}
 
-const (
-	{{.FirstValue.Comment}}
-	{{.FirstValue.Name}} {{$.TypeName}} = {{$.ValueExpr}}
-
-	{{range $.Values}}
-		{{.Comment}}
-		{{.Name}} {{$.UnderlyingType}}
-	{{end}}
-)
-
 const _{{$.TypeName}}_string = "{{$.CombinedString}}"
+
+// FirstValue returns the lowest {{$.TypeName}} enum value.
+// Useful for iteration and bound checks.
+func ({{$.ReceiverName}} {{$.TypeName}}) FirstValue() {{$.TypeName}} {
+	return {{$.FirstValue.Name}}
+}
+
+// LastValue returns the highest {{$.TypeName}} enum value.
+// Useful for iteration and bound checks.
+func ({{$.ReceiverName}} {{$.TypeName}}) LastValue() {{$.TypeName}} {
+	return {{$.LastValue.Name}}
+}
 
 // String returns the text-printed representation of {{$.TypeName}}.
 // Can be used for serialization.
@@ -185,7 +248,7 @@ const _{{$.TypeName}}_string = "{{$.CombinedString}}"
 // Returns an empty string for unknown enum entries.
 func ({{$.ReceiverName}} {{$.TypeName}}) String() string {
 	switch ({{$.ReceiverName}}) {
-	{{range $.AllValues -}}
+	{{range $.Values -}}
 	case {{.Name}}:
 		return _{{$.TypeName}}_string[{{.StringFrom}}:{{.StringTo}}] // "{{.String}}"
 	{{end -}}
@@ -193,14 +256,14 @@ func ({{$.ReceiverName}} {{$.TypeName}}) String() string {
 	return ""
 }
 
-// FromString updates the {{$.ReceiverName}} value if given string is recognized.
-// Can be used for deserialization if the values for FromString are created by String method.
+// AssignString updates the {{$.ReceiverName}} value if given string is recognized.
+// Can be used for deserialization if the values for AssignString are created by String method.
 //
 // Keeps the old value if given string is not recognized.
-func ({{$.ReceiverName}} *{{$.TypeName}}) FromString(raw string) {
+func ({{$.ReceiverName}} *{{$.TypeName}}) AssignString(raw string) {
 	value := *{{$.ReceiverName}}
 	switch raw {
-	{{range $.AllValues -}}
+	{{range $.Values -}}
 	case "{{.String}}":
 		value = {{.Name}}
 	{{end -}}
