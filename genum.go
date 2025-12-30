@@ -290,6 +290,15 @@ func ({{$.ReceiverName}} *{{$.TypeName}}) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func ({{$.ReceiverName}} {{$.TypeName}}) MarshalText() ([]byte, error) {
+	return []byte({{$.ReceiverName}}.String()), nil
+}
+
+func ({{$.ReceiverName}} *{{$.TypeName}}) UnmarshalText(data []byte) error {
+	{{$.ReceiverName}}.AssignString(bytesToString(data))
+	return nil
+}
+
 func bytesToString(b []byte) string {
     return unsafe.String(unsafe.SliceData(b), len(b))
 }
