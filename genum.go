@@ -280,6 +280,9 @@ func ({{$.ReceiverName}} {{$.TypeName}}) MarshalJSON() ([]byte, error) {
 }
 
 func ({{$.ReceiverName}} *{{$.TypeName}}) UnmarshalJSON(data []byte) error {
+	bytesToString := func(b []byte) string {
+		return unsafe.String(unsafe.SliceData(b), len(b))
+	}
 	if len(data) > 0 {
 		data = data[1:] // first "
 	}
@@ -295,11 +298,10 @@ func ({{$.ReceiverName}} {{$.TypeName}}) MarshalText() ([]byte, error) {
 }
 
 func ({{$.ReceiverName}} *{{$.TypeName}}) UnmarshalText(data []byte) error {
+	bytesToString := func(b []byte) string {
+		return unsafe.String(unsafe.SliceData(b), len(b))
+	}
 	{{$.ReceiverName}}.AssignString(bytesToString(data))
 	return nil
-}
-
-func bytesToString(b []byte) string {
-    return unsafe.String(unsafe.SliceData(b), len(b))
 }
 `))
