@@ -261,19 +261,29 @@ func ({{$.ReceiverName}} {{$.TypeName}}) String() string {
 	return ""
 }
 
+// TryAssignString is like AssignString, but also returns an explicit "ok"
+// value that tells whether the raw string was recognized.
+// Useful for enums that don't have a sentinel zero value.
+func ({{$.ReceiverName}} *{{$.TypeName}}) TryAssignString(raw string) bool {
+	value := *{{$.ReceiverName}}
+	found := false
+	switch raw {
+	{{range $.Values -}}
+	case "{{.String}}":
+		value = {{.Name}}
+		found = true
+	{{end -}}
+	}
+	*{{$.ReceiverName}} = value
+	return found
+}
+
 // AssignString updates the {{$.ReceiverName}} value if given string is recognized.
 // Can be used for deserialization if the values for AssignString are created by String method.
 //
 // Keeps the old value if given string is not recognized.
 func ({{$.ReceiverName}} *{{$.TypeName}}) AssignString(raw string) {
-	value := *{{$.ReceiverName}}
-	switch raw {
-	{{range $.Values -}}
-	case "{{.String}}":
-		value = {{.Name}}
-	{{end -}}
-	}
-	*{{$.ReceiverName}} = value
+	{{$.ReceiverName}}.TryAssignString(raw)
 }
 
 func ({{$.ReceiverName}} {{$.TypeName}}) MarshalJSON() ([]byte, error) {
