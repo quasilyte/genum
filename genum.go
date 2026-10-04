@@ -288,7 +288,7 @@ func ({{$.ReceiverName}} *{{$.TypeName}}) AssignString(raw string) {
 
 func ({{$.ReceiverName}} {{$.TypeName}}) MarshalJSON() ([]byte, error) {
 	_s := {{$.ReceiverName}}.String()
-	data := make([]byte, len(_s) + 2)
+	data := make([]byte, 0, len(_s) + 2)
 	data = append(data, '"')
 	data = append(data, _s...)
 	data = append(data, '"')
